@@ -1,6 +1,14 @@
 <!DOCTYPE html>
 <!--
-  ระบบวิเคราะห์ยอดลูกค้า-ยอดรถยนต์ 2569 · เวอร์ชัน v58
+  ระบบวิเคราะห์ยอดลูกค้า-ยอดรถยนต์ 2569 · เวอร์ชัน v60
+  v60 — ตัวเลือก "สัปดาห์" ยึด "สัปดาห์ล่าสุดที่มีข้อมูล" เป็นค่าตั้งต้นเสมอ (กติกาเดียวกับเดือนใน v58)
+        ทั้งแถบช่วงสรุปหน้ารายเดือน และ dropdown เลือกสัปดาห์หน้ารายงานสรุป
+        เมื่อผู้ใช้เลือกสัปดาห์เองแล้วระบบจะเคารพการเลือกนั้น และล้างการปักหมุดเมื่อเปลี่ยนเดือน
+  v59 — เปลี่ยนกติกาการแบ่งสัปดาห์เป็น "ปฏิทินจันทร์–อาทิตย์" อย่างเดียว ตามที่กำหนด:
+        สัปดาห์ที่ 1 = สัปดาห์ที่มีวันที่ 1 ของเดือน, ขึ้นวันจันทร์ = ขึ้นสัปดาห์ใหม่ทันที
+        เลิกใช้เลขสัปดาห์จากบรรทัด "หมายเหตุ...สัปดาห์ที่ N" ในชีตเป็นตัวกำหนด (เก็บไว้เป็น
+        ข้อมูลอ้างอิงใน sheetWeekNo เท่านั้น) เพราะเลขในชีตเลื่อน/ข้าม/ปิดยอดไม่ตรงงวดได้
+        ผลลัพธ์ ก.ย. 2569 (1 ก.ย. = วันอังคาร): ส.1 = 1–6 · ส.2 = 7–13 · ส.3 = 14–20 · ส.4 = 21–27 · ส.5 = 28–30
   v58 — (1) แก้ค่าเริ่มต้นของเดือนที่แสดง: เดิมล็อกอยู่ที่เดือนสุดท้ายของ EMBEDDED_DATA (ก.ค.)
         แม้ซิงค์ดึง ส.ค./ก.ย. มาแล้วก็ไม่ขยับ เพราะโค้ดเปลี่ยนเดือนให้เฉพาะตอนที่เดือนเดิม "หายไป"
         เท่านั้น · แก้เป็น: ตราบใดที่ผู้ใช้ยังไม่เลือกเดือนเอง ระบบจะเกาะ "เดือนล่าสุดที่มีข้อมูล"
@@ -873,7 +881,7 @@ html.dark .nav-btn.active{background:linear-gradient(135deg,var(--gate-a1),var(-
       <div id="weeklySummaryWrap" class="mb-6">
         <div class="flex items-center justify-between mb-3">
           <h3 class="font-display font-semibold">สรุปแยกรายสัปดาห์</h3>
-          <span class="text-xs" style="color:var(--ink-soft);">แบ่งตามสัปดาห์ที่ระบุในชีตข้อมูล (หรือสัปดาห์ปฏิทินเมื่อไม่มีระบุ)</span>
+          <span class="text-xs" style="color:var(--ink-soft);">แบ่งสัปดาห์แบบปฏิทิน จันทร์–อาทิตย์ (สัปดาห์ที่ 1 = สัปดาห์ที่มีวันที่ 1 ของเดือน)</span>
         </div>
         <div id="weeklyCards" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
       </div>
@@ -1058,6 +1066,9 @@ const state = {
   // (เดิมค่าเริ่มต้นถูกตั้งครั้งเดียวตอน init จากข้อมูลที่ฝังในไฟล์ พอซิงค์ได้เดือนใหม่มาก็ไม่ขยับตาม)
   monthPinnedByUser: false,
   selectedWeek: 0, // 0 = ทั้งเดือน, 1..n = สัปดาห์ที่ n
+  // v60: true เมื่อผู้ใช้กดเลือกสัปดาห์/ทั้งเดือนเอง — ตราบที่ยังเป็น false ระบบจะเกาะ "สัปดาห์ล่าสุด
+  // ที่มีข้อมูล" เสมอ (กติกาเดียวกับ monthPinnedByUser) และถูกล้างทุกครั้งที่เปลี่ยนเดือน
+  weekPinnedByUser: false,
   data: JSON.parse(JSON.stringify(EMBEDDED_DATA)), // {monthKey: {monthNum, monthName, year, daily[], totalCur, totalPrev, pctChange, verified}}
   charts: {} // เก็บ instance Chart.js เพื่อ destroy ก่อน re-render กันหน่วยความจำรั่ว
 };
@@ -1171,10 +1182,29 @@ function resolveActiveMonthKey(){
   return keys.includes(state.selectedMonth) ? state.selectedMonth : keys[keys.length-1];
 }
 
+// v60: เลขสัปดาห์ล่าสุดที่มีข้อมูลจริงของเดือนนั้น (0 = ไม่มีข้อมูลสัปดาห์เลย)
+function getLatestWeekNo(monthKey){
+  if (!monthKey) return 0;
+  const weeks = computeWeeklyStats(monthKey);
+  return weeks.length ? weeks[weeks.length-1].weekNo : 0;
+}
+
+// v60: สัปดาห์ที่ "ควรแสดง" ของเดือนหนึ่ง ๆ
+//  • ผู้ใช้ยังไม่เลือกเอง → สัปดาห์ล่าสุดที่มีข้อมูล
+//  • ผู้ใช้เลือกเองแล้ว   → เคารพการเลือก (รวมถึง 0 = ทั้งเดือน) เว้นแต่สัปดาห์นั้นไม่มีข้อมูลแล้ว
+function resolveActiveWeekNo(monthKey){
+  const weeks = monthKey ? computeWeeklyStats(monthKey) : [];
+  if (!weeks.length) return 0;
+  if (!state.weekPinnedByUser) return weeks[weeks.length-1].weekNo;
+  if (state.selectedWeek === 0) return 0; // ผู้ใช้เลือก "ทั้งเดือน" เอง
+  return weeks.find(w=>w.weekNo===state.selectedWeek) ? state.selectedWeek : weeks[weeks.length-1].weekNo;
+}
+
 // v58: ผู้ใช้กลับไปโหมด "ตามล่าสุดอัตโนมัติ" — ใช้กับปุ่ม "ล่าสุด"
 function followLatestMonth(){
   state.monthPinnedByUser = false;
   state.selectedMonth = getLatestMonthKey();
+  state.weekPinnedByUser = false; // v60: กลับไปเกาะสัปดาห์ล่าสุดด้วย
   state.selectedWeek = 0;
   syncMonthSelectorsToState();
 }
@@ -1302,31 +1332,30 @@ function computeWeeklyStats(monthKey){
     return Math.floor((day - 1 + firstDow) / 7) + 1;
   };
 
+  // ── v59: แบ่งสัปดาห์จาก "ปฏิทินจันทร์–อาทิตย์" อย่างเดียว ────────────────────────
+  // กติกา: สัปดาห์ที่ 1 = สัปดาห์ที่มีวันที่ 1 ของเดือนอยู่ (แม้จะไม่ครบ 7 วัน)
+  //        พอถึงวันจันทร์ถัดไปคือขึ้นสัปดาห์ใหม่ทันที ไล่ไปเรื่อย ๆ จนจบเดือน
+  // เลิกอ่านเลขสัปดาห์จากบรรทัด "หมายเหตุ...สัปดาห์ที่ N" ในชีตมาเป็นตัวกำหนด เพราะเลขในชีต
+  // เลื่อน/ข้าม/ปิดยอดไม่ตรงงวดได้ (เป็นที่มาของบั๊กเลขสัปดาห์ผิดที่พบมาแล้ว 2 รอบ)
+  // เลขจากชีตยังถูกเก็บไว้ในฟิลด์ sheetWeekNo เพื่อใช้ตรวจสอบเทียบเท่านั้น ไม่มีผลต่อการแสดงผล
   const buckets = {};
   sorted.forEach(d => {
     if (!isValidISO(d.date)) return; // ข้ามแถวที่วันที่เพี้ยน — กัน bucket "NaN"
-    // ใช้เลขสัปดาห์ที่ระบุในชีตจริง (d.weekNo) เป็นหลักเสมอถ้ามี — ตรงกับที่ห้างกำหนดเอง (ไม่อิงจันทร์-อาทิตย์
-    // เคร่งครัด อาจยาว/สั้นกว่า 7 วันรอบวันหยุดนักขัตฤกษ์) คำนวณจากปฏิทินเป็นแค่ทางเลือกสำรองเมื่อไม่มีเลขระบุ
-    let wk = (d.weekNo !== null && d.weekNo !== undefined) ? d.weekNo : null;
-    if (wk === null) {
-      const dt = new Date(d.date + 'T00:00:00');
-      wk = weekOfMonth(dt);
-    }
+    const dt = new Date(d.date + 'T00:00:00');
+    if (isNaN(dt.getTime())) return;
+    const wk = weekOfMonth(dt);
     if (!isFinite(wk) || wk < 1) return;
     if (!buckets[wk]) buckets[wk] = [];
     buckets[wk].push(d);
   });
 
-  // ── v57: เรียงลำดับสัปดาห์ใหม่เป็น 1..n ตาม "วันที่เริ่มจริง" เสมอ ──────────────────
-  // เหตุผล: เลขสัปดาห์ที่อ่านมาจากชีตอาจเลื่อน/ข้าม/ซ้ำได้ (ตัวบอกสัปดาห์ลอย, แถวเทมเพลต,
-  // พิมพ์เลขผิด) การเรียงใหม่ตามเวลาทำให้ "สัปดาห์แรกของเดือน = สัปดาห์ที่ 1" เสมอ
-  // และสัปดาห์ถัดไปไล่เรียง 1,2,3,... ไม่มีวันกระโดด — ตรงกับที่ผู้ใช้อ่านจากชีต 100%
-  // ส่วนเลขดิบจากชีตยังเก็บไว้ใน sheetWeekNo เผื่อไว้ตรวจสอบย้อนหลัง
-  const groups = Object.keys(buckets).map(k => ({ sheetWeekNo: Number(k), days: buckets[k] }));
+  // เลขสัปดาห์คือเลขจากปฏิทินโดยตรง ไม่เรียงใหม่ — เพื่อให้ "สัปดาห์ที่ 3" หมายถึงสัปดาห์ที่ 3
+  // ของปฏิทินเดือนนั้นจริง ๆ เสมอ แม้บางสัปดาห์จะยังไม่มีข้อมูล (เช่นเดือนที่กรอกข้อมูลไม่ต่อเนื่อง)
+  const groups = Object.keys(buckets).map(k => ({ weekNo: Number(k), days: buckets[k] }));
   groups.forEach(g => g.days.sort((a,b)=>a.date.localeCompare(b.date)));
-  groups.sort((a,b)=> a.days[0].date.localeCompare(b.days[0].date));
-  return groups.map((g, gi) => {
-    const wk = gi + 1;
+  groups.sort((a,b)=> a.weekNo - b.weekNo);
+  return groups.map((g) => {
+    const wk = g.weekNo;
     const days = g.days;
     const sum = (f) => days.reduce((s,d)=>s+(Number(d[f])||0),0);
     const totals = { customer:sum('customer'), car:sum('car'), moto:sum('moto'), delivery:sum('delivery') };
@@ -1337,7 +1366,8 @@ function computeWeeklyStats(monthKey){
     days.forEach(d=>{ if ((Number(d.customer)||0) > (Number(peak.customer)||0)) peak = d; });
     return {
       weekNo: wk,
-      sheetWeekNo: g.sheetWeekNo, // เลขดิบตามที่ระบุในชีต (ก่อนเรียงใหม่) — ไว้ตรวจสอบเทียบ
+      // เลขดิบที่ระบุไว้ในชีต (ถ้ามี) — เก็บไว้ตรวจสอบเทียบเท่านั้น ไม่มีผลต่อการแสดงผล
+      sheetWeekNo: (days[0].weekNo !== null && days[0].weekNo !== undefined) ? days[0].weekNo : null,
       startDate: days[0].date,
       endDate: days[days.length-1].date,
       days,
@@ -1865,6 +1895,7 @@ function renderMonthChips(){
     btn.addEventListener('click', ()=>{
       state.selectedMonth = btn.dataset.month;
       state.monthPinnedByUser = true; // v58: ผู้ใช้เลือกเอง → ห้ามระบบเด้งไปเดือนอื่นเอง
+      state.weekPinnedByUser = false; // v60: เปลี่ยนเดือน = ล้างการปักหมุดสัปดาห์ ให้เกาะสัปดาห์ล่าสุดของเดือนใหม่
       state.selectedWeek = 0;
       renderMonthly();
     });
@@ -1881,7 +1912,7 @@ function renderWeekChips(weeks){
   });
   document.getElementById('weekChips').innerHTML = chips.join('');
   document.querySelectorAll('.week-chip').forEach(btn=>{
-    btn.addEventListener('click', ()=>{ state.selectedWeek = Number(btn.dataset.week); renderMonthly(); });
+    btn.addEventListener('click', ()=>{ state.selectedWeek = Number(btn.dataset.week); state.weekPinnedByUser = true; renderMonthly(); });
   });
 }
 
@@ -1913,7 +1944,7 @@ function renderWeeklyCards(weeks){
   }).join('');
   document.getElementById('weeklyCards').innerHTML = html;
   document.querySelectorAll('[data-weekcard]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{ state.selectedWeek = Number(btn.dataset.weekcard); renderMonthly(); });
+    btn.addEventListener('click', ()=>{ state.selectedWeek = Number(btn.dataset.weekcard); state.weekPinnedByUser = true; renderMonthly(); });
   });
 }
 
@@ -1937,7 +1968,13 @@ function renderMonthly(){
   const weeks = computeWeeklyStats(state.selectedMonth);
 
   // ถ้าสัปดาห์ที่เลือกไม่มีอยู่ (เช่นเปลี่ยนเดือน) ให้กลับไปทั้งเดือน
-  if (state.selectedWeek !== 0 && !weeks.find(w=>w.weekNo===state.selectedWeek)) state.selectedWeek = 0;
+  // v60: หน้า "รายละเอียดรายเดือน" ยังตั้งต้นที่ "ทั้งเดือน" เพราะเป็นหน้าสรุปทั้งเดือนโดยธรรมชาติ
+  // แต่ถ้าผู้ใช้เลือกสัปดาห์ไว้ จะเคารพการเลือกนั้น และตกกลับไปสัปดาห์ล่าสุดเมื่อสัปดาห์นั้นไม่มีข้อมูลแล้ว
+  if (state.weekPinnedByUser) {
+    state.selectedWeek = resolveActiveWeekNo(state.selectedMonth);
+  } else if (state.selectedWeek !== 0) {
+    state.selectedWeek = 0;
+  }
   renderWeekChips(weeks);
 
   const notice = document.getElementById('monthPartialNotice');
@@ -2717,6 +2754,7 @@ async function syncAllFromSheets(silent){
         const latest = getLatestMonthKey();
         if (latest && latest !== state.selectedMonth) {
           state.selectedMonth = latest;
+          state.weekPinnedByUser = false; // v60: เดือนเลื่อน = เกาะสัปดาห์ล่าสุดของเดือนใหม่
           state.selectedWeek = 0;
           const es = document.getElementById('dataEditMonthSelect'); if (es) es.value = latest;
           const rs = document.getElementById('reportMonthSelect');   if (rs) rs.value = latest;
@@ -2924,10 +2962,15 @@ function initNav(){
   document.getElementById('reportMonthSelect').addEventListener('change', (e)=>{
     state.selectedMonth = e.target.value;
     state.monthPinnedByUser = true; // v58: เลือกเดือนเองในหน้ารายงานสรุป
+    state.weekPinnedByUser = false; // v60: เปลี่ยนเดือน = กลับไปเกาะสัปดาห์ล่าสุดของเดือนใหม่
     if (document.getElementById('reportScopeSelect').value === 'week') populateReportWeekSelect();
     renderReportPreview();
   });
-  document.getElementById('reportWeekSelect').addEventListener('change', renderReportPreview);
+  document.getElementById('reportWeekSelect').addEventListener('change', (e)=>{
+    state.selectedWeek = Number(e.target.value) || 0;
+    state.weekPinnedByUser = true; // v60: เลือกสัปดาห์เองในหน้ารายงานสรุป
+    renderReportPreview();
+  });
   document.getElementById('refreshPreviewBtn').addEventListener('click', ()=>{ showToast('กำลังอัปเดตตัวอย่างรายงาน...', 'info'); renderReportPreview(); });
 }
 
@@ -3912,8 +3955,12 @@ function populateReportWeekSelect(){
   const sel = document.getElementById('reportWeekSelect');
   const monthKey = document.getElementById('reportMonthSelect').value;
   const weeks = monthKey ? computeWeeklyStats(monthKey) : [];
+  // v60: ยังไม่เลือกสัปดาห์เอง → ตั้งต้นที่สัปดาห์ล่าสุดที่มีข้อมูลของเดือนนั้นเสมอ
+  // (เดิมค้างค่าเดิมไว้ พอซิงค์ได้สัปดาห์ใหม่เข้ามาก็ไม่ขยับตาม)
   const cur = Number(sel.value);
-  const valid = weeks.find(w=>w.weekNo===cur) ? cur : (weeks.length ? weeks[weeks.length-1].weekNo : 0);
+  const valid = (state.weekPinnedByUser && weeks.find(w=>w.weekNo===cur))
+    ? cur
+    : (weeks.length ? weeks[weeks.length-1].weekNo : 0);
   sel.innerHTML = weeks.map(w=>{
     const s = new Date(w.startDate+'T00:00:00').getDate(), e = new Date(w.endDate+'T00:00:00').getDate();
     return `<option value="${w.weekNo}" ${w.weekNo===valid?'selected':''}>สัปดาห์ที่ ${w.weekNo} (วันที่ ${s}–${e})</option>`;
